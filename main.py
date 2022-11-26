@@ -6,7 +6,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import relationship
 from flask_login import UserMixin, login_user, LoginManager, login_required, current_user, logout_user
-from forms import CreatePostForm, RegisterForm, LoginForm
+from forms import CreatePostForm, RegisterForm, LoginForm, CommentForm
 #from flask_gravatar import Gravatar
 from functools import wraps
 
@@ -26,21 +26,45 @@ db = SQLAlchemy(app)
 
 ##CONFIGURE TABLES
 
+
+class User(UserMixin,db.Model):
+    __tablename__ = "user_table"
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(50), nullable=False, unique=True)
+    password = db.Column(db.String(250), nullable=False)
+    name = db.Column(db.String(50), nullable=False)
+
+    # Posts works as a list that contains all posts in child table BlogPost
+    posts = db.relationship("BlogPost", back_populates="author")
+    # Comments works as a list that contains all comments in child table Comments
+    comments = db.relationship("Comments", back_populates="author")
+
 class BlogPost(db.Model):
     __tablename__ = "blog_posts"
     id = db.Column(db.Integer, primary_key=True)
-    author = db.Column(db.String(250), nullable=False)
+    # Author is now a user object where we can access any attribute in User
+    author = db.relationship("User", back_populates="posts")
+    author_id = db.Column(db.Integer, db.ForeignKey("user_table.id"))
+
+    post_comments = db.relationship("Comments", back_populates="post_parent")
+
     title = db.Column(db.String(250), unique=True, nullable=False)
     subtitle = db.Column(db.String(250), nullable=False)
     date = db.Column(db.String(250), nullable=False)
     body = db.Column(db.Text, nullable=False)
     img_url = db.Column(db.String(250), nullable=False)
 
-class User(UserMixin,db.Model):
+class Comments(db.Model):
+    __tablename__= "comments"
     id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(50), nullable=False, unique=True)
-    password = db.Column(db.String(250), nullable=False)
-    name = db.Column(db.String(50), nullable=False)
+    text = db.Column(db.Text, nullable=False)
+    author_id = db.Column(db.Integer, db.ForeignKey("user_table.id"))
+    # Author is now a user object where we can access any attribute in User
+    author = db.relationship("User", back_populates="comments")
+
+    post_id = db.Column(db.Integer, db.ForeignKey("blog_posts.id"))
+    post_parent = db.relationship("BlogPost", back_populates="post_comments")
+
 #db.create_all()
 
 def admin_only(func):
@@ -68,6 +92,9 @@ def get_all_posts():
     # if current_user.id == 1:
     #     is_admin = True
     posts = BlogPost.query.all()
+    users = User.query.all()
+    for user in users:
+        print(user.posts)
     return render_template("index.html",
                            all_posts=posts,
                            is_logged=current_user.is_authenticated,
@@ -124,10 +151,23 @@ def logout():
     return redirect(url_for('get_all_posts'))
 
 
-@app.route("/post/<int:post_id>")
+@app.route("/post/<int:post_id>", methods=["GET","POST"])
+@login_required
 def show_post(post_id):
     requested_post = BlogPost.query.get(post_id)
-    return render_template("post.html", post=requested_post)
+    form = CommentForm()
+    if not current_user.is_authenticated:
+        print("here", current_user.is_authenticated)
+        flash("You must log in before being able to see a post")
+        return redirect(url_for("login"))
+
+    if form.validate_on_submit():
+        comment = form.comment.data
+        print(comment)
+        new_comment = Comments(text=comment, author=current_user, post_parent=requested_post)
+        db.session.add(new_comment)
+        db.session.commit()
+    return render_template("post.html", post=requested_post, form=form)
 
 
 @app.route("/about")
@@ -140,7 +180,7 @@ def contact():
     return render_template("contact.html")
 
 
-@app.route("/new-post")
+@app.route("/new-post", methods=["POST","GET"])
 @admin_only
 @login_required
 def add_new_post():
